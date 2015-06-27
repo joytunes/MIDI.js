@@ -460,386 +460,6 @@ MIDI.Player = MIDI.Player || {};
 
 })(MIDI);
 /*
-	----------------------------------------------------------
-	MIDI.Player : 0.3.1 : 2015-03-26
-	----------------------------------------------------------
-	https://github.com/mudcube/MIDI.js
-	----------------------------------------------------------
-*/
-
-if (typeof MIDI === 'undefined') MIDI = {};
-if (typeof MIDI.Player === 'undefined') MIDI.Player = {};
-
-(function() { 'use strict';
-
-var midi = MIDI.Player;
-midi.currentTime = 0;
-midi.endTime = 0; 
-midi.restart = 0; 
-midi.playing = false;
-midi.timeWarp = 1;
-midi.startDelay = 0;
-midi.BPM = 120;
-
-midi.start =
-midi.resume = function(onsuccess) {
-    if (midi.currentTime < -1) {
-    	midi.currentTime = -1;
-    }
-    startAudio(midi.currentTime, null, onsuccess);
-};
-
-midi.pause = function() {
-	var tmp = midi.restart;
-	stopAudio();
-	midi.restart = tmp;
-};
-
-midi.stop = function() {
-	stopAudio();
-	midi.restart = 0;
-	midi.currentTime = 0;
-};
-
-midi.addListener = function(onsuccess) {
-	onMidiEvent = onsuccess;
-};
-
-midi.removeListener = function() {
-	onMidiEvent = undefined;
-};
-
-midi.clearAnimation = function() {
-	if (midi.animationFrameId)  {
-		cancelAnimationFrame(midi.animationFrameId);
-	}
-};
-
-midi.setAnimation = function(callback) {
-	var currentTime = 0;
-	var tOurTime = 0;
-	var tTheirTime = 0;
-	//
-	midi.clearAnimation();
-	///
-	var frame = function() {
-		midi.animationFrameId = requestAnimationFrame(frame);
-		///
-		if (midi.endTime === 0) {
-			return;
-		}
-		if (midi.playing) {
-			currentTime = (tTheirTime === midi.currentTime) ? tOurTime - Date.now() : 0;
-			if (midi.currentTime === 0) {
-				currentTime = 0;
-			} else {
-				currentTime = midi.currentTime - currentTime;
-			}
-			if (tTheirTime !== midi.currentTime) {
-				tOurTime = Date.now();
-				tTheirTime = midi.currentTime;
-			}
-		} else { // paused
-			currentTime = midi.currentTime;
-		}
-		///
-		var endTime = midi.endTime;
-		var percent = currentTime / endTime;
-		var total = currentTime / 1000;
-		var minutes = total / 60;
-		var seconds = total - (minutes * 60);
-		var t1 = minutes * 60 + seconds;
-		var t2 = (endTime / 1000);
-		///
-		if (t2 - t1 < -1.0) {
-			return;
-		} else {
-			callback({
-				now: t1,
-				end: t2,
-				events: noteRegistrar
-			});
-		}
-	};
-	///
-	requestAnimationFrame(frame);
-};
-
-// helpers
-
-midi.loadMidiFile = function(onsuccess, onprogress, onerror) {
-	try {
-		midi.replayer = new Replayer(MidiFile(midi.currentData), midi.timeWarp, null, midi.BPM);
-		midi.data = midi.replayer.getData();
-		midi.endTime = getLength();
-		///
-		MIDI.loadPlugin({
-// 			instruments: midi.getFileInstruments(),
-			onsuccess: onsuccess,
-			onprogress: onprogress,
-			onerror: onerror
-		});
-	} catch(event) {
-		onerror && onerror(event);
-	}
-};
-
-midi.loadFile = function(file, onsuccess, onprogress, onerror) {
-	midi.stop();
-	if (file.indexOf('base64,') !== -1) {
-		var data = window.atob(file.split(',')[1]);
-		midi.currentData = data;
-		midi.loadMidiFile(onsuccess, onprogress, onerror);
-	} else {
-		var fetch = new XMLHttpRequest();
-		fetch.open('GET', file);
-		fetch.overrideMimeType('text/plain; charset=x-user-defined');
-		fetch.onreadystatechange = function() {
-			if (this.readyState === 4) {
-				if (this.status === 200) {
-					var t = this.responseText || '';
-					var ff = [];
-					var mx = t.length;
-					var scc = String.fromCharCode;
-					for (var z = 0; z < mx; z++) {
-						ff[z] = scc(t.charCodeAt(z) & 255);
-					}
-					///
-					var data = ff.join('');
-					midi.currentData = data;
-					midi.loadMidiFile(onsuccess, onprogress, onerror);
-				} else {
-					onerror && onerror('Unable to load MIDI file');
-				}
-			}
-		};
-		fetch.send();
-	}
-};
-
-midi.getFileInstruments = function() {
-	var instruments = {};
-	var programs = {};
-	for (var n = 0; n < midi.data.length; n ++) {
-		var event = midi.data[n][0].event;
-		if (event.type !== 'channel') {
-			continue;
-		}
-		var channel = event.channel;
-		switch(event.subtype) {
-			case 'controller':
-//				console.log(event.channel, MIDI.defineControl[event.controllerType], event.value);
-				break;
-			case 'programChange':
-				programs[channel] = event.programNumber;
-				break;
-			case 'noteOn':
-				var program = programs[channel];
-				var gm = MIDI.GM.byId[isFinite(program) ? program : channel];
-				instruments[gm.id] = true;
-				break;
-		}
-	}
-	var ret = [];
-	for (var key in instruments) {
-		ret.push(key);
-	}
-	return ret;
-};
-
-// Playing the audio
-
-var eventQueue = []; // hold events to be triggered
-var queuedTime; // 
-var startTime = 0; // to measure time elapse
-var noteRegistrar = {}; // get event for requested note
-var onMidiEvent = undefined; // listener
-var scheduleTracking = function(channel, note, currentTime, offset, message, velocity, time) {
-	return setTimeout(function() {
-		var data = {
-			channel: channel,
-			note: note,
-			now: currentTime,
-			end: midi.endTime,
-			message: message,
-			velocity: velocity
-		};
-		//
-		if (message === 128) {
-			delete noteRegistrar[note];
-		} else {
-			noteRegistrar[note] = data;
-		}
-		if (onMidiEvent) {
-			onMidiEvent(data);
-		}
-		midi.currentTime = currentTime;
-		///
-		eventQueue.shift();
-		///
-		if (eventQueue.length < 1000) {
-			startAudio(queuedTime, true);
-		} else if (midi.currentTime === queuedTime && queuedTime < midi.endTime) { // grab next sequence
-			startAudio(queuedTime, true);
-		}
-	}, currentTime - offset);
-};
-
-var getContext = function() {
-	if (MIDI.api === 'webaudio') {
-		return MIDI.WebAudio.getContext();
-	} else {
-		midi.ctx = {currentTime: 0};
-	}
-	return midi.ctx;
-};
-
-var getLength = function() {
-	var data =  midi.data;
-	var length = data.length;
-	var totalTime = 0.5;
-	for (var n = 0; n < length; n++) {
-		totalTime += data[n][1];
-	}
-	return totalTime;
-};
-
-var __now;
-var getNow = function() {
-    if (window.performance && window.performance.now) {
-        return window.performance.now();
-    } else {
-		return Date.now();
-	}
-};
-
-var startAudio = function(currentTime, fromCache, onsuccess) {
-	if (!midi.replayer) {
-		return;
-	}
-	if (!fromCache) {
-		if (typeof currentTime === 'undefined') {
-			currentTime = midi.restart;
-		}
-		///
-		midi.playing && stopAudio();
-		midi.playing = true;
-		midi.data = midi.replayer.getData();
-		midi.endTime = getLength();
-	}
-	///
-	var note;
-	var offset = 0;
-	var messages = 0;
-	var data = midi.data;
-	var ctx = getContext();
-	var length = data.length;
-	//
-	queuedTime = 0.5;
-	///
-	var interval = eventQueue[0] && eventQueue[0].interval || 0;
-	var foffset = currentTime - midi.currentTime;
-	///
-	if (MIDI.api !== 'webaudio') { // set currentTime on ctx
-		var now = getNow();
-		__now = __now || now;
-		ctx.currentTime = (now - __now) / 1000;
-	}
-	///
-	startTime = ctx.currentTime;
-	///
-	for (var n = 0; n < length && messages < 100; n++) {
-		var obj = data[n];
-		if ((queuedTime += obj[1]) <= currentTime) {
-			offset = queuedTime;
-			continue;
-		}
-		///
-		currentTime = queuedTime - offset;
-		///
-		var event = obj[0].event;
-		if (event.type !== 'channel') {
-			continue;
-		}
-		///
-		var channelId = event.channel;
-		var channel = MIDI.channels[channelId];
-		var delay = ctx.currentTime + ((currentTime + foffset + midi.startDelay) / 1000);
-		var queueTime = queuedTime - offset + midi.startDelay;
-		switch (event.subtype) {
-			case 'controller':
-				MIDI.setController(channelId, event.controllerType, event.value, delay);
-				break;
-			case 'programChange':
-				MIDI.programChange(channelId, event.programNumber, delay);
-				break;
-			case 'pitchBend':
-				MIDI.pitchBend(channelId, event.value, delay);
-				break;
-			case 'noteOn':
-				if (channel.mute) break;
-				note = event.noteNumber - (midi.MIDIOffset || 0);
-				eventQueue.push({
-				    event: event,
-				    time: queueTime,
-				    source: MIDI.noteOn(channelId, event.noteNumber, event.velocity, delay),
-				    interval: scheduleTracking(channelId, note, queuedTime + midi.startDelay, offset - foffset, 144, event.velocity)
-				});
-				messages++;
-				break;
-			case 'noteOff':
-				if (channel.mute) break;
-				note = event.noteNumber - (midi.MIDIOffset || 0);
-				eventQueue.push({
-				    event: event,
-				    time: queueTime,
-				    source: MIDI.noteOff(channelId, event.noteNumber, delay),
-				    interval: scheduleTracking(channelId, note, queuedTime, offset - foffset, 128, 0)
-				});
-				break;
-			default:
-				break;
-		}
-	}
-	///
-	onsuccess && onsuccess(eventQueue);
-};
-
-var stopAudio = function() {
-	var ctx = getContext();
-	midi.playing = false;
-	midi.restart += (ctx.currentTime - startTime) * 1000;
-	// stop the audio, and intervals
-	while (eventQueue.length) {
-		var o = eventQueue.pop();
-		window.clearInterval(o.interval);
-		if (!o.source) continue; // is not webaudio
-		if (typeof(o.source) === 'number') {
-			window.clearTimeout(o.source);
-		} else { // webaudio
-			o.source.disconnect(0);
-		}
-	}
-	// run callback to cancel any notes still playing
-	for (var key in noteRegistrar) {
-		var o = noteRegistrar[key]
-		if (noteRegistrar[key].message === 144 && onMidiEvent) {
-			onMidiEvent({
-				channel: o.channel,
-				note: o.note,
-				now: o.now,
-				end: o.end,
-				message: 128,
-				velocity: o.velocity
-			});
-		}
-	}
-	// reset noteRegistrar
-	noteRegistrar = {};
-};
-
-})();
-/*
 	----------------------------------------------------------------------
 	AudioTag <audio> - OGG or MPEG Soundbank
 	----------------------------------------------------------------------
@@ -1395,14 +1015,14 @@ var stopAudio = function() {
 			plugin = access;
 			var pluginOutputs = plugin.outputs;
 			if (typeof pluginOutputs == 'function') { // Chrome pre-43
-			  output = pluginOutputs()[0];
+				output = pluginOutputs()[0];
 			} else { // Chrome post-43
-        output = pluginOutputs[0];
+				output = pluginOutputs[0];
 			}
 			if (output === undefined) { // nothing there...
-			  errFunction();
+				errFunction();
 			} else {
-			  opts.onsuccess && opts.onsuccess();			
+				opts.onsuccess && opts.onsuccess();			
 			}
 		}, errFunction);
 	};
@@ -1779,3 +1399,256 @@ var globalExists = function(path, root) {
 if (typeof (module) !== "undefined" && module.exports) {
 	module.exports = dom.loadScript;
 }
+//https://github.com/davidchambers/Base64.js
+
+;(function () {
+  var object = typeof exports != 'undefined' ? exports : this; // #8: web workers
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+
+  function InvalidCharacterError(message) {
+    this.message = message;
+  }
+  InvalidCharacterError.prototype = new Error;
+  InvalidCharacterError.prototype.name = 'InvalidCharacterError';
+
+  // encoder
+  // [https://gist.github.com/999166] by [https://github.com/nignag]
+  object.btoa || (
+  object.btoa = function (input) {
+    for (
+      // initialize result and counter
+      var block, charCode, idx = 0, map = chars, output = '';
+      // if the next input index does not exist:
+      //   change the mapping table to "="
+      //   check if d has no fractional digits
+      input.charAt(idx | 0) || (map = '=', idx % 1);
+      // "8 - idx % 1 * 8" generates the sequence 2, 4, 6, 8
+      output += map.charAt(63 & block >> 8 - idx % 1 * 8)
+    ) {
+      charCode = input.charCodeAt(idx += 3/4);
+      if (charCode > 0xFF) {
+        throw new InvalidCharacterError("'btoa' failed: The string to be encoded contains characters outside of the Latin1 range.");
+      }
+      block = block << 8 | charCode;
+    }
+    return output;
+  });
+
+  // decoder
+  // [https://gist.github.com/1020396] by [https://github.com/atk]
+  object.atob || (
+  object.atob = function (input) {
+    input = input.replace(/=+$/, '')
+    if (input.length % 4 == 1) {
+      throw new InvalidCharacterError("'atob' failed: The string to be decoded is not correctly encoded.");
+    }
+    for (
+      // initialize result and counters
+      var bc = 0, bs, buffer, idx = 0, output = '';
+      // get next character
+      buffer = input.charAt(idx++);
+      // character found in table? initialize bit storage and add its ascii value;
+      ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer,
+        // and if not first of each 4 characters,
+        // convert the first 8 bits to one ascii character
+        bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0
+    ) {
+      // try to find character in table (0-63, not found => -1)
+      buffer = chars.indexOf(buffer);
+    }
+    return output;
+  });
+
+}());
+/**
+ * @license -------------------------------------------------------------------
+ *   module: Base64Binary
+ *      src: http://blog.danguer.com/2011/10/24/base64-binary-decoding-in-javascript/
+ *  license: Simplified BSD License
+ * -------------------------------------------------------------------
+ * Copyright 2011, Daniel Guerrero. All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     - Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     - Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL DANIEL GUERRERO BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+var Base64Binary = {
+	_keyStr : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=",
+
+	/* will return a  Uint8Array type */
+	decodeArrayBuffer: function(input) {
+		var bytes = Math.ceil( (3*input.length) / 4.0);
+		var ab = new ArrayBuffer(bytes);
+		this.decode(input, ab);
+
+		return ab;
+	},
+
+	decode: function(input, arrayBuffer) {
+		//get last chars to see if are valid
+		var lkey1 = this._keyStr.indexOf(input.charAt(input.length-1));		 
+		var lkey2 = this._keyStr.indexOf(input.charAt(input.length-1));		 
+
+		var bytes = Math.ceil( (3*input.length) / 4.0);
+		if (lkey1 == 64) bytes--; //padding chars, so skip
+		if (lkey2 == 64) bytes--; //padding chars, so skip
+
+		var uarray;
+		var chr1, chr2, chr3;
+		var enc1, enc2, enc3, enc4;
+		var i = 0;
+		var j = 0;
+
+		if (arrayBuffer)
+			uarray = new Uint8Array(arrayBuffer);
+		else
+			uarray = new Uint8Array(bytes);
+
+		input = input.replace(/[^A-Za-z0-9\+\/\=]/g, "");
+
+		for (i=0; i<bytes; i+=3) {	
+			//get the 3 octects in 4 ascii chars
+			enc1 = this._keyStr.indexOf(input.charAt(j++));
+			enc2 = this._keyStr.indexOf(input.charAt(j++));
+			enc3 = this._keyStr.indexOf(input.charAt(j++));
+			enc4 = this._keyStr.indexOf(input.charAt(j++));
+
+			chr1 = (enc1 << 2) | (enc2 >> 4);
+			chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+			chr3 = ((enc3 & 3) << 6) | enc4;
+
+			uarray[i] = chr1;			
+			if (enc3 != 64) uarray[i+1] = chr2;
+			if (enc4 != 64) uarray[i+2] = chr3;
+		}
+
+		return uarray;	
+	}
+};
+/**
+ * @license -------------------------------------------------------------------
+ *   module: WebAudioShim - Fix naming issues for WebAudioAPI supports
+ *      src: https://github.com/Dinahmoe/webaudioshim
+ *   author: Dinahmoe AB
+ * -------------------------------------------------------------------
+ * Copyright (c) 2012 DinahMoe AB
+ * 
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following
+ * conditions:
+ * 
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+ * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+window.AudioContext = window.AudioContext || window.webkitAudioContext || null;
+window.OfflineAudioContext = window.OfflineAudioContext || window.webkitOfflineAudioContext || null;
+
+(function (Context) {
+	var isFunction = function (f) {
+		return Object.prototype.toString.call(f) === "[object Function]" ||
+			Object.prototype.toString.call(f) === "[object AudioContextConstructor]";
+	};
+	var contextMethods = [
+		["createGainNode", "createGain"],
+		["createDelayNode", "createDelay"],
+		["createJavaScriptNode", "createScriptProcessor"]
+	];
+	///
+	var proto;
+	var instance;
+	var sourceProto;
+	///
+	if (!isFunction(Context)) {
+		return;
+	}
+	instance = new Context();
+	if (!instance.destination || !instance.sampleRate) {
+		return;
+	}
+	proto = Context.prototype;
+	sourceProto = Object.getPrototypeOf(instance.createBufferSource());
+
+	if (!isFunction(sourceProto.start)) {
+		if (isFunction(sourceProto.noteOn)) {
+			sourceProto.start = function (when, offset, duration) {
+				switch (arguments.length) {
+					case 0:
+						throw new Error("Not enough arguments.");
+					case 1:
+						this.noteOn(when);
+						break;
+					case 2:
+						if (this.buffer) {
+							this.noteGrainOn(when, offset, this.buffer.duration - offset);
+						} else {
+							throw new Error("Missing AudioBuffer");
+						}
+						break;
+					case 3:
+						this.noteGrainOn(when, offset, duration);
+				}
+			};
+		}
+	}
+
+	if (!isFunction(sourceProto.noteOn)) {
+		sourceProto.noteOn = sourceProto.start;
+	}
+
+	if (!isFunction(sourceProto.noteGrainOn)) {
+		sourceProto.noteGrainOn = sourceProto.start;
+	}
+
+	if (!isFunction(sourceProto.stop)) {
+		sourceProto.stop = sourceProto.noteOff;
+	}
+
+	if (!isFunction(sourceProto.noteOff)) {
+		sourceProto.noteOff = sourceProto.stop;
+	}
+
+	contextMethods.forEach(function (names) {
+		var name1;
+		var name2;
+		while (names.length) {
+			name1 = names.pop();
+			if (isFunction(this[name1])) {
+				this[names.pop()] = this[name1];
+			} else {
+				name2 = names.pop();
+				this[name1] = this[name2];
+			}
+		}
+	}, proto);
+})(window.AudioContext);

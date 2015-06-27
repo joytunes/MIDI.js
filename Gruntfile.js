@@ -19,7 +19,7 @@ module.exports = function (grunt) {
 				'js/midi/audioDetect.js',
 				'js/midi/gm.js',
 				'js/midi/loader.js',
-				'js/midi/player.js',
+//				'js/midi/player.js',
 				'js/midi/plugin.audiotag.js',
 				'js/midi/plugin.webaudio.js',
 				'js/midi/plugin.webmidi.js',
@@ -27,8 +27,11 @@ module.exports = function (grunt) {
 				'js/util/dom_request_xhr.js', // req when using XHR
 				'js/util/dom_request_script.js', // req otherwise
 //				'js/widget/loader.js', // optional
-				'inc/polyfill/Base64.js',
-				'inc/polyfill/base64binary.js'
+//				'inc/polyfill/Base64.js',
+//				'inc/polyfill/base64binary.js'
+				'inc/shim/Base64.js',
+				'inc/shim/base64binary.js',
+				'inc/shim/WebAudioAPI.js'
 			]
 		},
 		uglify: {
